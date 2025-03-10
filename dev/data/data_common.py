@@ -43,7 +43,7 @@ def write_datafile(filename, toks, model_desc="gpt-2"):
     - The tokens follow, each as uint16 (gpt-2) or uint32 (llama)
     """
     assert len(toks) < 2**31, "token count too large" # ~2.1B tokens
-    assert model_desc in ["gpt-2", "llama-3"], f"unknown model descriptor {model_desc}"
+    assert model_desc in ["gpt-2", "llama-3", "custom"], f"unknown model descriptor {model_desc}"    
     info = HEADERS_INFO[model_desc]
     # construct the header
     header = np.zeros(256, dtype=np.int32) # header is always 256 int32 values
