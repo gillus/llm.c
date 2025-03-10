@@ -558,7 +558,6 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="gpt2", help="gpt2|gpt2-medium|gpt2-large|gpt2-xl|d12|d24|d36|d48")
     # GPT configuration parameters
     parser.add_argument("--block_size", type=int, default=1024, help="context size/block size for the model")
-    parser.add_argument("--vocab_size", type=int, default=50257, help="vocabulary size")
     parser.add_argument("--n_layer", type=int, default=12, help="number of transformer layers")
     parser.add_argument("--n_head", type=int, default=12, help="number of attention heads")
     parser.add_argument("--n_embd", type=int, default=768, help="embedding dimension size")
@@ -677,7 +676,7 @@ if __name__ == "__main__":
         # Create custom config from args, but use model-specific layer/head/embd if not specified
         model_config = GPTConfig(
             block_size=args.block_size,
-            vocab_size=args.vocab_size,
+            vocab_size=enc.vocab_size,
             n_layer=args.n_layer if args.n_layer != 12 else model_config_base["n_layer"],
             n_head=args.n_head if args.n_head != 12 else model_config_base["n_head"],
             n_embd=args.n_embd if args.n_embd != 768 else model_config_base["n_embd"]
