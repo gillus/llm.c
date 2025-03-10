@@ -27,7 +27,7 @@ parser.add_argument("-v", "--vocab_size", type=int, default=30000,
                     help="Size of the vocabulary for the tokenizer")
 args = parser.parse_args()
 
-DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), "simpleenglishwiki_cache")
+DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), f"{args.dataset_path}")
 os.makedirs(DATA_CACHE_DIR, exist_ok=True)
 
 dataset = load_dataset("parquet", data_files=args.dataset_path, split="train")
