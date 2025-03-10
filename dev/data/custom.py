@@ -21,7 +21,7 @@ HEADERS_INFO = {
 parser = argparse.ArgumentParser(description="Preprocess the custom dataset")
 parser.add_argument("--dataset_path", type=str, required=True,
                     help="Path to the parquet file of the dataset (with a 'text' column)")
-parser.add_argument("-s", "--shard_size", type=int, default=10**8,
+parser.add_argument("-s", "--shard_size", type=int, default=10**6,
                     help="Size of each data shard (in tokens)")
 parser.add_argument("-v", "--vocab_size", type=int, default=30000,
                     help="Size of the vocabulary for the tokenizer")
