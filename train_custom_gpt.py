@@ -34,6 +34,12 @@ from torch.distributed import init_process_group, destroy_process_group
 from torch.distributed.optim import ZeroRedundancyOptimizer
 import torch.distributed as dist
 
+HEADERS_INFO = {
+    "gpt-2": {"magic": 0x67607432, "version": 1, "token_dtype": np.uint16},
+    "llama-3": {"magic": 0x6c6c6d61, "version": 1, "token_dtype": np.uint32},
+    "custom": {"magic": 0x63757374, "version": 1, "token_dtype": np.uint32},  # example values
+}
+
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the GPT-2 model
 
@@ -223,8 +229,6 @@ class GPT(nn.Module):
                 config_args['n_head'] = args.n_head
             if args.n_embd != 768:
                 config_args['n_embd'] = args.n_embd
-            if args.vocab_size != 50257:
-                config_args['vocab_size'] = args.vocab_size
             if args.block_size != 1024:
                 config_args['block_size'] = args.block_size
         else:
@@ -330,25 +334,24 @@ def _peek_data_shard(filename):
     with open(filename, "rb") as f:
         # first read the header, which is 256 int32 integers (4 bytes each)
         header = np.frombuffer(f.read(256*4), dtype=np.int32)
-    if header[0] != 20240520:
-        print("ERROR: magic number mismatch in the data .bin file!")
-        print("---> HINT: Are you passing in a correct file with --input_bin?")
-        print("---> HINT: Dataset encoding changed recently, re-run data prepro or refer again to README")
-        print("---> HINT: For example re-run: `python dev/data/tinyshakespeare.py`, then re-try")
-        exit(1)
     assert header[1] == 1, "unsupported version"
     ntok = header[2] # number of tokens (claimed)
     return ntok # for now just return the number of tokens
 
-def _load_data_shard(filename):
+def _load_data_shard(filename, model_desc="custom"):
     with open(filename, "rb") as f:
         # first read the header, which is 256 int32 integers (4 bytes each)
         header = np.frombuffer(f.read(256*4), dtype=np.int32)
-        assert header[0] == 20240520, "magic number mismatch in the data .bin file"
-        assert header[1] == 1, "unsupported version"
-        ntok = header[2] # number of tokens (claimed)
-        # the rest of it are tokens, stored as uint16
-        tokens = np.frombuffer(f.read(), dtype=np.uint16)
+        ntok = header[2]  # number of tokens (claimed)
+        
+        # Use correct dtype based on model_desc
+        info = HEADERS_INFO[model_desc]
+        dtype = info["token_dtype"]
+
+        # Read tokens with the appropriate dtype
+        tokens = np.frombuffer(f.read(), dtype=dtype)
+
+    print(len(tokens), ntok)
     assert len(tokens) == ntok, "number of tokens read does not match header?"
     return tokens
 
@@ -360,7 +363,7 @@ class DistributedDataLoader:
         self.T = T
 
         # glob files that match the pattern
-        self.files = sorted(glob.glob(filename_pattern))
+        self.files = sorted(glob.glob(filename_pattern+'/*.bin'))
         assert len(self.files) > 0, f"did not find any files that match the pattern {filename_pattern}"
 
         # load and validate all data shards, count number of tokens in total
@@ -463,7 +466,6 @@ def pad_vocab(tensor, multiple=128, value=0):
     """
     assert tensor.ndim == 2
     V, C = tensor.shape
-    assert V == 50257, "just being defensive here"
     # calculate padded vocab size by rounding up to nearest multiple
     Vp = ((V + multiple - 1) // multiple) * multiple
     # pad the tensor
@@ -555,7 +557,6 @@ if __name__ == "__main__":
     parser.add_argument("--input_bin", type=str, default="dev/data/tinyshakespeare/tiny_shakespeare_val.bin", help="input .bin to train on")
     parser.add_argument("--input_val_bin", type=str, default="", help="input .bin to eval validation loss on")
     parser.add_argument("--output_dir", type=str, default="", help="output directory to which to write logs and checkpoints")
-    parser.add_argument("--model", type=str, default="gpt2", help="gpt2|gpt2-medium|gpt2-large|gpt2-xl|d12|d24|d36|d48")
     # GPT configuration parameters
     parser.add_argument("--block_size", type=int, default=1024, help="context size/block size for the model")
     parser.add_argument("--n_layer", type=int, default=12, help="number of transformer layers")
@@ -596,7 +597,6 @@ if __name__ == "__main__":
     B, T = args.batch_size, args.sequence_length
     assert 1 <= T <= 1024
     assert args.dtype in {"float32", "float16", "bfloat16"}
-    assert args.model in {"gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl", "d12", "d24", "d36", "d48"}
 
     # set up DDP (distributed data parallel). torchrun sets this env variable
     ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -660,31 +660,22 @@ if __name__ == "__main__":
 
     # load the custom tokenizer
 
-    TOKENIZER_SAVE_PATH = f"dev/data/{args.input_bin}/custom_tokenizer/"
+    TOKENIZER_SAVE_PATH = f"./{args.input_bin}custom_tokenizer"
     enc = PreTrainedTokenizerFast.from_pretrained(TOKENIZER_SAVE_PATH)
 
     # init the model, either from scratch or from OpenAI pretrained checkpoint
-    if args.model[0] == "d":
-        # from scratch (random weights)
-        model_config_base = {
-            "d12": {"n_layer": 12, "n_head": 12, "n_embd": 768},
-            "d24": {"n_layer": 24, "n_head": 16, "n_embd": 1024},
-            "d36": {"n_layer": 36, "n_head": 20, "n_embd": 1280},
-            "d48": {"n_layer": 48, "n_head": 25, "n_embd": 1600},
-        }[args.model]
-        
-        # Create custom config from args, but use model-specific layer/head/embd if not specified
-        model_config = GPTConfig(
-            block_size=args.block_size,
-            vocab_size=enc.vocab_size,
-            n_layer=args.n_layer if args.n_layer != 12 else model_config_base["n_layer"],
-            n_head=args.n_head if args.n_head != 12 else model_config_base["n_head"],
-            n_embd=args.n_embd if args.n_embd != 768 else model_config_base["n_embd"]
-        )
-        model = GPT(model_config)
-    else:
-        # load the GPT-2 model weights
-        model = GPT.from_pretrained(args.model, args)
+    # from scratch (random weights)
+    
+    # Create custom config from args, but use model-specific layer/head/embd if not specified
+    model_config = GPTConfig(
+        block_size=args.block_size,
+        vocab_size=enc.vocab_size,
+        n_layer=args.n_layer,
+        n_head=args.n_head,
+        n_embd=args.n_embd
+    )
+    model = GPT(model_config)
+
     model.train()
     model.to(device)
     if args.compile:
@@ -712,14 +703,11 @@ if __name__ == "__main__":
         logits, loss = model(x, y)
         loss.backward()
         # save model params, in both float32 and bfloat16
-        model_to_size = {"gpt2": "124M", "gpt2-medium": "355M", "gpt2-large": "774M", "gpt2-xl": "1558M"}
-        model_to_size.update({f"d{d}": f"d{d}" for d in [12, 24, 36, 48]})
-        model_size_str = model_to_size[args.model] # e.g. "124M", or "d12"
-        write_model(model, f"gpt2_{model_size_str}.bin", dtype="float32")
-        write_model(model, f"gpt2_{model_size_str}_bf16.bin", dtype="bfloat16")
+        write_model(model, f"gpt_custom.bin", dtype="float32")
+        write_model(model, f"gpt_custom_bf16.bin", dtype="bfloat16")
         # save x, y, logits, loss, and parameter gradients, for debugging C
         # always store these in fp32 to have an accurate reference (?)
-        write_state(model, x, y, logits, loss, f"gpt2_{model_size_str}_debug_state.bin")
+        write_state(model, x, y, logits, loss, f"gpt_custom_debug_state.bin")
         # reset the train_loader for the optimization below
         train_loader.reset()
 
