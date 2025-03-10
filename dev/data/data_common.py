@@ -34,6 +34,11 @@ HEADERS_INFO = {
         "version": 7,
         "token_dtype": np.uint32,
     },
+    "custom": {
+        "magic": 20250301,
+        "version": 1,
+        "token_dtype": np.uint32,
+    },    
 }
 
 def write_datafile(filename, toks, model_desc="gpt-2"):
