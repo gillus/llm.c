@@ -124,6 +124,16 @@ class GPTConfig:
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
+    
+    @classmethod
+    def from_args(cls, args):
+        return cls(
+            block_size=args.block_size,
+            vocab_size=args.vocab_size,
+            n_layer=args.n_layer,
+            n_head=args.n_head,
+            n_embd=args.n_embd,
+        )
 
 class GPT(nn.Module):
 
@@ -190,7 +200,7 @@ class GPT(nn.Module):
         return logits, loss
 
     @classmethod
-    def from_pretrained(cls, model_type):
+    def from_pretrained(cls, model_type, args=None):
         """Loads pretrained GPT-2 model weights from huggingface"""
         assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
         from transformers import GPT2LMHeadModel
@@ -203,8 +213,24 @@ class GPT(nn.Module):
             'gpt2-large':   dict(n_layer=36, n_head=20, n_embd=1280), # 774M params
             'gpt2-xl':      dict(n_layer=48, n_head=25, n_embd=1600), # 1558M params
         }[model_type]
-        config_args['vocab_size'] = 50257 # always 50257 for GPT model checkpoints
-        config_args['block_size'] = 1024 # always 1024 for GPT model checkpoints
+        
+        # Override with command line args if provided
+        if args is not None:
+            # Only override values that were explicitly changed from default
+            if args.n_layer != 12:
+                config_args['n_layer'] = args.n_layer
+            if args.n_head != 12:
+                config_args['n_head'] = args.n_head
+            if args.n_embd != 768:
+                config_args['n_embd'] = args.n_embd
+            if args.vocab_size != 50257:
+                config_args['vocab_size'] = args.vocab_size
+            if args.block_size != 1024:
+                config_args['block_size'] = args.block_size
+        else:
+            config_args['vocab_size'] = 50257 # always 50257 for GPT model checkpoints
+            config_args['block_size'] = 1024 # always 1024 for GPT model checkpoints
+            
         # create a from-scratch initialized minGPT model
         config = GPTConfig(**config_args)
         model = GPT(config)
@@ -506,23 +532,6 @@ def write_state(model, x, y, logits, loss, filename):
         write_tensors(grads, model.config.n_layer, file, "float32")
     print(f"wrote {filename}")
 
-def write_tokenizer(enc, filename):
-    n = enc.max_token_value + 1
-    header = torch.zeros(256, dtype=torch.int32)
-    header[0] = 20240328 # magic
-    header[1] = 2 # tokenizer version = 2 (1 -> 2: includes EOT token)
-    header[2] = n # number of tokens
-    header[3] = enc.eot_token # EOT token
-    with open(filename, "wb") as file:
-        file.write(header.numpy().tobytes())
-        for i in range(n):
-            b = enc.decode_bytes([i])
-            length = len(b)
-            assert length < 256, f"Token length exceeds 255: {length}"
-            file.write(struct.pack("<B", length))  # Write the length as a 1-byte unsigned integer
-            file.write(b)  # Write the actual bytes
-    print(f"wrote {filename}")
-
 # -----------------------------------------------------------------------------
 # int main
 
@@ -547,6 +556,12 @@ if __name__ == "__main__":
     parser.add_argument("--input_val_bin", type=str, default="", help="input .bin to eval validation loss on")
     parser.add_argument("--output_dir", type=str, default="", help="output directory to which to write logs and checkpoints")
     parser.add_argument("--model", type=str, default="gpt2", help="gpt2|gpt2-medium|gpt2-large|gpt2-xl|d12|d24|d36|d48")
+    # GPT configuration parameters
+    parser.add_argument("--block_size", type=int, default=1024, help="context size/block size for the model")
+    parser.add_argument("--vocab_size", type=int, default=50257, help="vocabulary size")
+    parser.add_argument("--n_layer", type=int, default=12, help="number of transformer layers")
+    parser.add_argument("--n_head", type=int, default=12, help="number of attention heads")
+    parser.add_argument("--n_embd", type=int, default=768, help="embedding dimension size")
     # token layout for each step of the optimization
     parser.add_argument("--batch_size", type=int, default=4, help="batch size, in units of #batch dimensions")
     parser.add_argument("--sequence_length", type=int, default=64, help="sequence length")
@@ -646,22 +661,31 @@ if __name__ == "__main__":
 
     # load the custom tokenizer
 
-    TOKENIZER_SAVE_PATH = "custompath/custom_tokenizer"
-    loaded_tokenizer = PreTrainedTokenizerFast.from_pretrained(TOKENIZER_SAVE_PATH)
+    TOKENIZER_SAVE_PATH = f"dev/data/{args.input_bin}/custom_tokenizer/"
+    enc = PreTrainedTokenizerFast.from_pretrained(TOKENIZER_SAVE_PATH)
 
     # init the model, either from scratch or from OpenAI pretrained checkpoint
     if args.model[0] == "d":
         # from scratch (random weights)
-        model_config = {
-            "d12": GPTConfig(block_size=1024, vocab_size=50257, n_layer=12, n_head=12, n_embd=768),
-            "d24": GPTConfig(block_size=1024, vocab_size=50257, n_layer=24, n_head=16, n_embd=1024),
-            "d36": GPTConfig(block_size=1024, vocab_size=50257, n_layer=36, n_head=20, n_embd=1280),
-            "d48": GPTConfig(block_size=1024, vocab_size=50257, n_layer=48, n_head=25, n_embd=1600),
+        model_config_base = {
+            "d12": {"n_layer": 12, "n_head": 12, "n_embd": 768},
+            "d24": {"n_layer": 24, "n_head": 16, "n_embd": 1024},
+            "d36": {"n_layer": 36, "n_head": 20, "n_embd": 1280},
+            "d48": {"n_layer": 48, "n_head": 25, "n_embd": 1600},
         }[args.model]
+        
+        # Create custom config from args, but use model-specific layer/head/embd if not specified
+        model_config = GPTConfig(
+            block_size=args.block_size,
+            vocab_size=args.vocab_size,
+            n_layer=args.n_layer if args.n_layer != 12 else model_config_base["n_layer"],
+            n_head=args.n_head if args.n_head != 12 else model_config_base["n_head"],
+            n_embd=args.n_embd if args.n_embd != 768 else model_config_base["n_embd"]
+        )
         model = GPT(model_config)
     else:
         # load the GPT-2 model weights
-        model = GPT.from_pretrained(args.model)
+        model = GPT.from_pretrained(args.model, args)
     model.train()
     model.to(device)
     if args.compile:
@@ -772,7 +796,7 @@ if __name__ == "__main__":
             model.eval()
             # before we end, let's also do one round of inference
             # we'll kick off the generation with "<|endoftext|>", which designates the start of a new sequence
-            start_ids = [enc.eot_token]
+            start_ids = [enc.eos_token_id]
             xg = (torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...])
             max_new_tokens = 32
             temperature = 1.0
