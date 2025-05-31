@@ -9,14 +9,7 @@ import requests
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers
 from transformers import PreTrainedTokenizerFast
 from data_common import write_datafile, download_file, write_evalfile
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-
-HEADERS_INFO = {
-    "gpt-2": {"magic": 0x67607432, "version": 1, "token_dtype": np.uint16},
-    "llama-3": {"magic": 0x6c6c6d61, "version": 1, "token_dtype": np.uint32},
-    "custom": {"magic": 0x63757374, "version": 1, "token_dtype": np.uint32},  # example values
-}
 
 parser = argparse.ArgumentParser(description="Preprocess the custom dataset")
 parser.add_argument("--dataset_path", type=str, required=True,

@@ -790,7 +790,7 @@ if __name__ == "__main__":
             top_k = 40
             yg = raw_model.generate(xg, max_new_tokens, temperature=temperature, top_k=top_k)
             print0('---------------')
-            print0(enc.decode(yg[0].tolist()))
+            print0(enc.decode(yg[0].tolist()).replace(" ", "").replace("Ġ", " ").replace(" ##", "").replace('Ċ','\n'))
             print0('---------------')
 
         # bit confusing: we want to make sure to eval and sample on 0th iteration
